@@ -28,11 +28,13 @@ const COMMON_HEADERS = {
   'referer'           : `https://m.starmakerstudios.com/a-vue3/spa-rhapsody-music/index?promotion_id=${PROMO_ID}&showBar=0&showNavigation=false&sp=game_center&game_id=13`,
   'accept-language'   : 'en-IN,en-US;q=0.9,en;q=0.8',
   'priority'          : 'u=1, i',
-  };
+  'Cookie'            : 'PHPSESSID=pd6mapbqfhbk3e7argj51uh1ts; X-Rce-Type-11=yidun; _gcl_au=1.1.1850565661.1776934232; _ga=GA1.1.459020718.1776934232; X-Rce-Token-11=UrhVBI9Kv4_vSJUOu00CqGXMG44vdz88qh7RDg==; oauth_token=94le54aFnKy5CrbNzo7s903FOWniysVT; _ga_Y5QLWEHNZ4=GS2.1.s1776966932$o4$g1$t1776966963$j29$l0$h0',
+};
 
 // ── In-memory store ───────────────────────────────────────────
 const store = {
   masterList   : new Map(),
+  newlyAdded   : new Set(),
   todayDayKey  : null,
   todayUpdated : null,
   debugToday   : [],
@@ -85,6 +87,7 @@ async function cronToday() {
     if (store.todayDayKey !== null && store.todayDayKey !== todayKey) {
       LOG.info(`[cronToday] Day changed ${store.todayDayKey} → ${todayKey}. Resetting.`);
       store.masterList.clear();
+      store.newlyAdded.clear();
       debugLog.push({ type: 'warn', msg: `Day reset: ${store.todayDayKey} → ${todayKey}. Cleared all data.`, ts: Date.now() });
     }
     store.todayDayKey = todayKey;
@@ -134,14 +137,17 @@ async function cronToday() {
       if (page > 10) { LOG.warn('[cronToday] Safety cap page>10'); break; }
     }
 
+    const brandNew = new Set();
     for (const [id, u] of fetchedThisRun) {
+      if (!store.masterList.has(id)) brandNew.add(id);
       store.masterList.set(id, u);
     }
 
+    store.newlyAdded   = brandNew;
     store.todayUpdated = Date.now();
     store.debugToday   = debugLog;
 
-    LOG.info(`════ [cronToday] DONE — master=${store.masterList.size} in ${Date.now() - startTime}ms ════`);
+    LOG.info(`════ [cronToday] DONE — master=${store.masterList.size}, new=${brandNew.size} in ${Date.now() - startTime}ms ════`);
   } catch (e) {
     LOG.error('[cronToday] UNHANDLED:', e.message);
     store.debugToday = [{ type: 'error', msg: e.message, ts: Date.now() }];
@@ -175,10 +181,11 @@ function esc(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function renderUserCard(u, index) {
+function renderUserCard(u, index, isNew) {
   const rank    = index + 1;
   const rankCls = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : '';
   const rankTxt = rank <= 3 ? ['🥇','🥈','🥉'][rank - 1] : rank;
+  const avClass = isNew ? 'av-new' : 'av-today';
   const avatar  = u.profile_image
     ? `<img src="${u.profile_image}" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.textContent='🎭'">`
     : '🎭';
@@ -186,9 +193,10 @@ function renderUserCard(u, index) {
     ? `<div class="bonus-amount">${formatGold(u.reward_gold)}</div><span class="bonus-tag">gold</span>`
     : `<div class="bonus-amount zero">—</div><span class="bonus-tag">unknown</span>`;
 
-  return `<div class="user-card" data-sid="${u.id}" onclick="openProfile('${esc(u.id)}', this, event)">
+  return `<div class="user-card${isNew ? ' card-new' : ''}" data-sid="${u.id}" onclick="openProfile('${esc(u.id)}', this, event)">
+    ${isNew ? '<span class="new-badge">new</span>' : ''}
     <div class="rank ${rankCls}">${rankTxt}</div>
-    <div class="avatar av-today">${avatar}</div>
+    <div class="avatar ${avClass}">${avatar}</div>
     <div class="user-info">
       <div class="username">${esc(u.name)}</div>
       <div class="sid-row"><span class="sid-text">${u.id}</span><span class="open-hint">↗</span></div>
@@ -218,12 +226,16 @@ function renderDebugLogs(entries) {
 }
 
 function renderHTML() {
-  const { masterList, todayUpdated, debugToday } = store;
+  const { masterList, newlyAdded, todayUpdated, debugToday } = store;
 
-  const allUsers   = [...masterList.values()].sort((a, b) => b.reward_gold - a.reward_gold);
+  const allUsers   = [...masterList.values()];
+  const newUsers   = allUsers.filter(u =>  newlyAdded.has(u.id)).sort((a, b) => b.reward_gold - a.reward_gold);
+  const oldUsers   = allUsers.filter(u => !newlyAdded.has(u.id)).sort((a, b) => b.reward_gold - a.reward_gold);
   const totalCount = masterList.size;
+  const newCount   = newlyAdded.size;
 
-  const allCards  = allUsers.map((u, i) => renderUserCard(u, i)).join('');
+  const newCards  = newUsers.map((u, i) => renderUserCard(u, i, true)).join('');
+  const oldCards  = oldUsers.map((u, i) => renderUserCard(u, i, false)).join('');
   const debugHtml = renderDebugLogs(debugToday);
 
   return `<!DOCTYPE html>
@@ -239,6 +251,7 @@ function renderHTML() {
       --bg:#07060f;--surface:#100e1c;--card:#161228;--border:rgba(220,180,60,0.13);
       --gold:#f0c040;--purple:#c09fff;--text:#ede0c8;--muted:#5a506a;
       --shine:rgba(240,192,64,0.06);--green:#69d47e;--red:#ff6b6b;--yellow:#ffc107;
+      --teal:#00d4b4;
     }
     html,body{height:100%;overflow-x:hidden}
     body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);max-width:430px;margin:0 auto;min-height:100vh;position:relative;}
@@ -286,6 +299,7 @@ function renderHTML() {
     .stats-bar{display:flex;gap:8px;margin-bottom:14px;}
     .stat-chip{display:flex;flex-direction:column;align-items:center;flex:1;padding:10px 8px;background:var(--surface);border:1px solid var(--border);border-radius:14px;}
     .stat-val{font-family:'Cinzel',serif;font-size:1.15rem;font-weight:700;color:var(--gold)}
+    .stat-val.teal{color:var(--teal)}
     .stat-label{font-size:.58rem;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-top:2px;text-align:center}
 
     /* Refresh bar */
@@ -300,18 +314,27 @@ function renderHTML() {
     /* Section labels */
     .section-label{display:flex;align-items:center;gap:8px;margin-bottom:12px}
     .pip{width:7px;height:7px;border-radius:50%;flex-shrink:0;animation:pp 2s infinite}
+    .pip-new{background:var(--teal);box-shadow:0 0 6px var(--teal)}
     .pip-old{background:var(--gold);box-shadow:0 0 6px var(--gold)}
     .pip-debug{background:var(--purple);box-shadow:0 0 6px var(--purple)}
     @keyframes pp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.6)}}
     .section-label>span:not(.pip){font-family:'Cinzel',serif;font-size:.7rem;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;}
     .count-badge{margin-left:auto;font-size:.64rem;font-weight:700;padding:2px 10px;border-radius:20px;}
+    .badge-new{background:rgba(0,212,180,.10);color:var(--teal);border:1px solid rgba(0,212,180,.25)}
     .badge-old{background:rgba(240,192,64,.10);color:var(--gold);border:1px solid rgba(240,192,64,.25)}
     .badge-debug{background:rgba(192,159,255,.10);color:var(--purple);border:1px solid rgba(192,159,255,.25)}
+
+    .section-gap{height:22px}
+    .divider{height:1px;background:linear-gradient(90deg,transparent,rgba(220,180,60,.2),transparent);margin:4px 0 20px;}
 
     /* User cards */
     .user-card{display:flex;align-items:center;gap:12px;padding:12px 13px;background:var(--card);border:1px solid var(--border);border-radius:16px;margin-bottom:9px;cursor:pointer;position:relative;overflow:hidden;transition:transform .14s,box-shadow .14s;-webkit-tap-highlight-color:transparent;user-select:none;}
     .user-card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--shine) 0%,transparent 55%);pointer-events:none;}
     .user-card:active{transform:scale(.974);box-shadow:0 0 0 2px var(--gold)}
+    .card-new{border-color:rgba(0,212,180,.25);}
+    .card-new:active{box-shadow:0 0 0 2px var(--teal)}
+    /* Tiny NEW badge — sits top-right, very small, unobtrusive */
+    .new-badge{position:absolute;top:6px;right:8px;font-size:.42rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--teal);background:rgba(0,212,180,.10);border:1px solid rgba(0,212,180,.25);border-radius:4px;padding:1px 4px;line-height:1.4;pointer-events:none;}
     .rank{width:22px;text-align:center;flex-shrink:0;font-family:'Cinzel',serif;font-size:.72rem;font-weight:700;color:var(--muted);}
     .rank.top1{color:#ffd700;text-shadow:0 0 8px rgba(255,215,0,.6)}
     .rank.top2{color:#c0c0c0;text-shadow:0 0 8px rgba(192,192,192,.4)}
@@ -319,6 +342,7 @@ function renderHTML() {
     .avatar{width:46px;height:46px;border-radius:50%;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:1.3rem;background:var(--surface);}
     .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
     .av-today{border:2px solid rgba(240,192,64,.45)}
+    .av-new{border:2px solid rgba(0,212,180,.55)}
     .user-info{flex:1;min-width:0}
     .username{font-size:.93rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .sid-row{display:flex;align-items:center;gap:5px;margin-top:3px}
@@ -402,8 +426,12 @@ function renderHTML() {
       <span class="stat-label">Total Found</span>
     </div>
     <div class="stat-chip">
-      <span class="stat-val">${store.todayDayKey || '—'}</span>
-      <span class="stat-label">Day</span>
+      <span class="stat-val teal">${newCount}</span>
+      <span class="stat-label">New This Run</span>
+    </div>
+    <div class="stat-chip">
+      <span class="stat-val">${totalCount - newCount}</span>
+      <span class="stat-label">Known</span>
     </div>
   </div>
 
@@ -418,12 +446,23 @@ function renderHTML() {
     </div>
   </div>
 
+  ${newCount > 0 ? `
+  <div class="section-label">
+    <span class="pip pip-new"></span>
+    <span>Newly Detected</span>
+    <span class="count-badge badge-new">${newCount} New</span>
+  </div>
+  ${newCards}
+  <div class="section-gap"></div>
+  <div class="divider"></div>
+  ` : ''}
+
   <div class="section-label">
     <span class="pip pip-old"></span>
-    <span>All Players</span>
-    <span class="count-badge badge-old">${totalCount} Players</span>
+    <span>${newCount > 0 ? 'Known Players' : 'All Players'}</span>
+    <span class="count-badge badge-old">${totalCount - newCount} Players</span>
   </div>
-  ${allCards || `<div class="empty-state"><span class="e-icon">⏳</span>Fetching players...<br>First run in progress.</div>`}
+  ${oldCards || `<div class="empty-state"><span class="e-icon">⏳</span>Fetching players...<br>First run in progress.</div>`}
 
 </div>
 
@@ -432,6 +471,7 @@ function renderHTML() {
   <div style="height:14px"></div>
   <div class="status-row">
     <span class="status-chip ${totalCount > 0 ? 'ok' : 'err'}">⭐ Total: ${totalCount}</span>
+    <span class="status-chip ${newCount > 0 ? 'ok' : 'warn'}">🌱 New: ${newCount}</span>
     <span class="status-chip ${todayUpdated ? 'ok' : 'err'}">📅 ${timeAgo(todayUpdated)}</span>
   </div>
   <div class="section-label" style="margin-bottom:10px">
