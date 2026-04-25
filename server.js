@@ -28,13 +28,11 @@ const COMMON_HEADERS = {
   'referer'           : `https://m.starmakerstudios.com/a-vue3/spa-rhapsody-music/index?promotion_id=${PROMO_ID}&showBar=0&showNavigation=false&sp=game_center&game_id=13`,
   'accept-language'   : 'en-IN,en-US;q=0.9,en;q=0.8',
   'priority'          : 'u=1, i',
-  'Cookie'            : 'PHPSESSID=pd6mapbqfhbk3e7argj51uh1ts; X-Rce-Type-11=yidun; _gcl_au=1.1.1850565661.1776934232; _ga=GA1.1.459020718.1776934232; X-Rce-Token-11=UrhVBI9Kv4_vSJUOu00CqGXMG44vdz88qh7RDg==; oauth_token=94le54aFnKy5CrbNzo7s903FOWniysVT; _ga_Y5QLWEHNZ4=GS2.1.s1776966932$o4$g1$t1776966963$j29$l0$h0',
-};
+  };
 
 // ── In-memory store ───────────────────────────────────────────
 const store = {
-  masterList   : new Map(), // id → user, grows all day
-  newlyAdded   : new Set(), // ids added in LAST cron run only
+  masterList   : new Map(),
   todayDayKey  : null,
   todayUpdated : null,
   debugToday   : [],
@@ -83,17 +81,14 @@ async function cronToday() {
   const debugLog  = [];
 
   try {
-    // Day reset
     const todayKey = getIndiaDateKey(Date.now());
     if (store.todayDayKey !== null && store.todayDayKey !== todayKey) {
       LOG.info(`[cronToday] Day changed ${store.todayDayKey} → ${todayKey}. Resetting.`);
       store.masterList.clear();
-      store.newlyAdded.clear();
       debugLog.push({ type: 'warn', msg: `Day reset: ${store.todayDayKey} → ${todayKey}. Cleared all data.`, ts: Date.now() });
     }
     store.todayDayKey = todayKey;
 
-    // Fetch up to 100 users from API (pages 1–10)
     const fetchedThisRun = new Map();
     let page    = 1;
     let hasMore = true;
@@ -139,19 +134,14 @@ async function cronToday() {
       if (page > 10) { LOG.warn('[cronToday] Safety cap page>10'); break; }
     }
 
-    // Detect brand-new users (not in master before this run)
-    const brandNew = new Set();
     for (const [id, u] of fetchedThisRun) {
-      if (!store.masterList.has(id)) brandNew.add(id);
-      // Always update with latest data (gold may change)
       store.masterList.set(id, u);
     }
 
-    store.newlyAdded   = brandNew;
     store.todayUpdated = Date.now();
     store.debugToday   = debugLog;
 
-    LOG.info(`════ [cronToday] DONE — master=${store.masterList.size}, new=${brandNew.size} in ${Date.now() - startTime}ms ════`);
+    LOG.info(`════ [cronToday] DONE — master=${store.masterList.size} in ${Date.now() - startTime}ms ════`);
   } catch (e) {
     LOG.error('[cronToday] UNHANDLED:', e.message);
     store.debugToday = [{ type: 'error', msg: e.message, ts: Date.now() }];
@@ -160,7 +150,6 @@ async function cronToday() {
   }
 }
 
-// Run immediately on startup, then every 60s
 cronToday();
 setInterval(cronToday, 60 * 1000);
 
@@ -186,11 +175,10 @@ function esc(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function renderUserCard(u, index, isNew) {
+function renderUserCard(u, index) {
   const rank    = index + 1;
   const rankCls = rank === 1 ? 'top1' : rank === 2 ? 'top2' : rank === 3 ? 'top3' : '';
   const rankTxt = rank <= 3 ? ['🥇','🥈','🥉'][rank - 1] : rank;
-  const avClass = isNew ? 'av-new' : 'av-today';
   const avatar  = u.profile_image
     ? `<img src="${u.profile_image}" alt="" loading="lazy" onerror="this.style.display='none';this.parentNode.textContent='🎭'">`
     : '🎭';
@@ -198,13 +186,12 @@ function renderUserCard(u, index, isNew) {
     ? `<div class="bonus-amount">${formatGold(u.reward_gold)}</div><span class="bonus-tag">gold</span>`
     : `<div class="bonus-amount zero">—</div><span class="bonus-tag">unknown</span>`;
 
-  return `<div class="user-card${isNew ? ' card-new' : ''}" data-sid="${u.id}">
-    ${isNew ? '<span class="new-badge">NEW</span>' : ''}
+  return `<div class="user-card" data-sid="${u.id}" onclick="openProfile('${esc(u.id)}', this, event)">
     <div class="rank ${rankCls}">${rankTxt}</div>
-    <div class="avatar ${avClass}">${avatar}</div>
+    <div class="avatar av-today">${avatar}</div>
     <div class="user-info">
       <div class="username">${esc(u.name)}</div>
-      <div class="sid-row"><span class="sid-text">${u.id}</span><span class="copy-hint">📋</span></div>
+      <div class="sid-row"><span class="sid-text">${u.id}</span><span class="open-hint">↗</span></div>
     </div>
     <div class="bonus-col">${bonus}</div>
   </div>`;
@@ -231,16 +218,12 @@ function renderDebugLogs(entries) {
 }
 
 function renderHTML() {
-  const { masterList, newlyAdded, todayUpdated, debugToday } = store;
+  const { masterList, todayUpdated, debugToday } = store;
 
-  const allUsers   = [...masterList.values()];
-  const newUsers   = allUsers.filter(u =>  newlyAdded.has(u.id)).sort((a, b) => b.reward_gold - a.reward_gold);
-  const oldUsers   = allUsers.filter(u => !newlyAdded.has(u.id)).sort((a, b) => b.reward_gold - a.reward_gold);
+  const allUsers   = [...masterList.values()].sort((a, b) => b.reward_gold - a.reward_gold);
   const totalCount = masterList.size;
-  const newCount   = newlyAdded.size;
 
-  const newCards  = newUsers.map((u, i) => renderUserCard(u, i, true)).join('');
-  const oldCards  = oldUsers.map((u, i) => renderUserCard(u, i, false)).join('');
+  const allCards  = allUsers.map((u, i) => renderUserCard(u, i)).join('');
   const debugHtml = renderDebugLogs(debugToday);
 
   return `<!DOCTYPE html>
@@ -256,7 +239,6 @@ function renderHTML() {
       --bg:#07060f;--surface:#100e1c;--card:#161228;--border:rgba(220,180,60,0.13);
       --gold:#f0c040;--purple:#c09fff;--text:#ede0c8;--muted:#5a506a;
       --shine:rgba(240,192,64,0.06);--green:#69d47e;--red:#ff6b6b;--yellow:#ffc107;
-      --teal:#00d4b4;
     }
     html,body{height:100%;overflow-x:hidden}
     body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);max-width:430px;margin:0 auto;min-height:100vh;position:relative;}
@@ -289,7 +271,7 @@ function renderHTML() {
     header h1{font-family:'Cinzel',serif;font-size:1.95rem;font-weight:900;letter-spacing:.07em;background:linear-gradient(135deg,#ffe680 0%,#f5a020 45%,#ffe680 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;filter:drop-shadow(0 2px 14px rgba(245,160,32,.45));}
     .tagline{margin-top:6px;font-size:.82rem;letter-spacing:.03em;color:var(--muted)}
 
-    /* Debug tab — only shown via ?debug=1 */
+    /* Debug tab */
     .debug-tab-wrap{position:sticky;top:0;z-index:10;display:none;margin:0 14px 0;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:4px;gap:4px;backdrop-filter:blur(16px);}
     .debug-tab-wrap.visible{display:flex}
     .tab-btn{flex:1;padding:10px 4px;border:none;border-radius:12px;background:transparent;color:var(--muted);font-family:'Nunito',sans-serif;font-size:.8rem;font-weight:700;cursor:pointer;transition:all .22s;-webkit-tap-highlight-color:transparent;}
@@ -304,7 +286,6 @@ function renderHTML() {
     .stats-bar{display:flex;gap:8px;margin-bottom:14px;}
     .stat-chip{display:flex;flex-direction:column;align-items:center;flex:1;padding:10px 8px;background:var(--surface);border:1px solid var(--border);border-radius:14px;}
     .stat-val{font-family:'Cinzel',serif;font-size:1.15rem;font-weight:700;color:var(--gold)}
-    .stat-val.teal{color:var(--teal)}
     .stat-label{font-size:.58rem;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-top:2px;text-align:center}
 
     /* Refresh bar */
@@ -319,25 +300,18 @@ function renderHTML() {
     /* Section labels */
     .section-label{display:flex;align-items:center;gap:8px;margin-bottom:12px}
     .pip{width:7px;height:7px;border-radius:50%;flex-shrink:0;animation:pp 2s infinite}
-    .pip-new{background:var(--teal);box-shadow:0 0 6px var(--teal)}
     .pip-old{background:var(--gold);box-shadow:0 0 6px var(--gold)}
     .pip-debug{background:var(--purple);box-shadow:0 0 6px var(--purple)}
     @keyframes pp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.6)}}
     .section-label>span:not(.pip){font-family:'Cinzel',serif;font-size:.7rem;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;}
     .count-badge{margin-left:auto;font-size:.64rem;font-weight:700;padding:2px 10px;border-radius:20px;}
-    .badge-new{background:rgba(0,212,180,.10);color:var(--teal);border:1px solid rgba(0,212,180,.25)}
     .badge-old{background:rgba(240,192,64,.10);color:var(--gold);border:1px solid rgba(240,192,64,.25)}
     .badge-debug{background:rgba(192,159,255,.10);color:var(--purple);border:1px solid rgba(192,159,255,.25)}
-    .section-gap{height:22px}
-    .divider{height:1px;background:linear-gradient(90deg,transparent,rgba(220,180,60,.2),transparent);margin:4px 0 20px;}
 
     /* User cards */
     .user-card{display:flex;align-items:center;gap:12px;padding:12px 13px;background:var(--card);border:1px solid var(--border);border-radius:16px;margin-bottom:9px;cursor:pointer;position:relative;overflow:hidden;transition:transform .14s,box-shadow .14s;-webkit-tap-highlight-color:transparent;user-select:none;}
     .user-card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--shine) 0%,transparent 55%);pointer-events:none;}
     .user-card:active{transform:scale(.974);box-shadow:0 0 0 2px var(--gold)}
-    .card-new{border-color:rgba(0,212,180,.3);background:linear-gradient(135deg,rgba(0,212,180,.05),var(--card));}
-    .card-new:active{box-shadow:0 0 0 2px var(--teal)}
-    .new-badge{position:absolute;top:8px;right:10px;font-size:.55rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--teal);background:rgba(0,212,180,.12);border:1px solid rgba(0,212,180,.3);border-radius:6px;padding:2px 6px;}
     .rank{width:22px;text-align:center;flex-shrink:0;font-family:'Cinzel',serif;font-size:.72rem;font-weight:700;color:var(--muted);}
     .rank.top1{color:#ffd700;text-shadow:0 0 8px rgba(255,215,0,.6)}
     .rank.top2{color:#c0c0c0;text-shadow:0 0 8px rgba(192,192,192,.4)}
@@ -345,12 +319,11 @@ function renderHTML() {
     .avatar{width:46px;height:46px;border-radius:50%;flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:1.3rem;background:var(--surface);}
     .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
     .av-today{border:2px solid rgba(240,192,64,.45)}
-    .av-new{border:2px solid rgba(0,212,180,.55)}
     .user-info{flex:1;min-width:0}
     .username{font-size:.93rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     .sid-row{display:flex;align-items:center;gap:5px;margin-top:3px}
     .sid-text{font-size:.67rem;color:var(--muted);font-family:monospace;letter-spacing:.04em}
-    .copy-hint{font-size:.6rem;color:var(--muted);opacity:.45}
+    .open-hint{font-size:.7rem;color:var(--gold);opacity:.6}
     .bonus-col{text-align:right;flex-shrink:0}
     .bonus-amount{font-family:'Cinzel',serif;font-size:1rem;font-weight:700;color:var(--gold);text-shadow:0 0 10px rgba(240,192,64,.4);}
     .bonus-amount.zero{color:var(--muted);text-shadow:none;font-size:.75rem}
@@ -363,7 +336,7 @@ function renderHTML() {
     .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(18px);background:linear-gradient(135deg,#1e1630,#120f20);border:1px solid rgba(240,192,64,.4);color:var(--gold);padding:11px 26px;border-radius:30px;font-size:.78rem;font-weight:700;letter-spacing:.07em;box-shadow:0 8px 30px rgba(0,0,0,.55);opacity:0;transition:all .28s cubic-bezier(.34,1.56,.64,1);z-index:999;pointer-events:none;white-space:nowrap;}
     .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
-    /* Debug panel styles */
+    /* Debug panel */
     .trigger-row{display:flex;gap:8px;margin-bottom:14px;}
     .trigger-btn{flex:1;padding:10px 8px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:'Nunito',sans-serif;font-size:.75rem;font-weight:700;cursor:pointer;transition:all .2s;}
     .trigger-btn:hover{border-color:var(--gold);color:var(--gold);}
@@ -414,13 +387,13 @@ function renderHTML() {
   <p class="tagline">Revealing Mystery Mans 🎭</p>
 </header>
 
-<!-- Debug tab bar — only shown via ?debug=1 -->
+<!-- Debug tab bar -->
 <div class="debug-tab-wrap" id="debug-tab-wrap">
   <button class="tab-btn active" onclick="switchTab('main',this)">⭐ Players</button>
   <button class="tab-btn" onclick="switchTab('debug',this)">🛠 Debug</button>
 </div>
 
-<!-- MAIN content (always visible by default) -->
+<!-- MAIN content -->
 <div class="main-content" id="panel-main">
 
   <div class="stats-bar">
@@ -429,12 +402,8 @@ function renderHTML() {
       <span class="stat-label">Total Found</span>
     </div>
     <div class="stat-chip">
-      <span class="stat-val teal">${newCount}</span>
-      <span class="stat-label">New This Run</span>
-    </div>
-    <div class="stat-chip">
-      <span class="stat-val">${totalCount - newCount}</span>
-      <span class="stat-label">Known</span>
+      <span class="stat-val">${store.todayDayKey || '—'}</span>
+      <span class="stat-label">Day</span>
     </div>
   </div>
 
@@ -449,23 +418,12 @@ function renderHTML() {
     </div>
   </div>
 
-  ${newCount > 0 ? `
-  <div class="section-label">
-    <span class="pip pip-new"></span>
-    <span>Newly Detected</span>
-    <span class="count-badge badge-new">${newCount} New</span>
-  </div>
-  ${newCards}
-  <div class="section-gap"></div>
-  <div class="divider"></div>
-  ` : ''}
-
   <div class="section-label">
     <span class="pip pip-old"></span>
-    <span>${newCount > 0 ? 'Known Players' : 'All Players'}</span>
-    <span class="count-badge badge-old">${totalCount - newCount} Players</span>
+    <span>All Players</span>
+    <span class="count-badge badge-old">${totalCount} Players</span>
   </div>
-  ${oldCards || `<div class="empty-state"><span class="e-icon">⏳</span>Fetching players...<br>First run in progress.</div>`}
+  ${allCards || `<div class="empty-state"><span class="e-icon">⏳</span>Fetching players...<br>First run in progress.</div>`}
 
 </div>
 
@@ -474,7 +432,6 @@ function renderHTML() {
   <div style="height:14px"></div>
   <div class="status-row">
     <span class="status-chip ${totalCount > 0 ? 'ok' : 'err'}">⭐ Total: ${totalCount}</span>
-    <span class="status-chip ${newCount > 0 ? 'ok' : 'warn'}">🌱 New: ${newCount}</span>
     <span class="status-chip ${todayUpdated ? 'ok' : 'err'}">📅 ${timeAgo(todayUpdated)}</span>
   </div>
   <div class="section-label" style="margin-bottom:10px">
@@ -550,8 +507,8 @@ function renderHTML() {
     clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('show'),2300);
   }
 
-  // Copy SID on card click
-  function copySid(sid,card,e){
+  // Open profile in StarMaker app via deep link
+  function openProfile(sid, card, e){
     const r=document.createElement('span'); r.className='ripple';
     const rect=card.getBoundingClientRect();
     const cx=(e.clientX||rect.left+rect.width/2)-rect.left;
@@ -559,23 +516,8 @@ function renderHTML() {
     const sz=Math.max(rect.width,rect.height);
     r.style.cssText='width:'+sz+'px;height:'+sz+'px;left:'+(cx-sz/2)+'px;top:'+(cy-sz/2)+'px';
     card.appendChild(r); setTimeout(()=>r.remove(),600);
-    navigator.clipboard.writeText(sid)
-      .then(()=>showToast('✓ '+sid+' copied!'))
-      .catch(()=>{
-        const ta=document.createElement('textarea');
-        ta.value=sid; document.body.appendChild(ta); ta.select();
-        document.execCommand('copy'); document.body.removeChild(ta);
-        showToast('✓ '+sid+' copied!');
-      });
+    window.location.href = 'sm://profileinfo?userId=' + sid;
   }
-  document.querySelectorAll('.user-card').forEach(card=>{
-    const sid=card.dataset.sid;
-    card.addEventListener('click',(e)=>copySid(sid,card,e));
-    let pt;
-    card.addEventListener('touchstart',(e)=>{pt=setTimeout(()=>copySid(sid,card,e.touches[0]),500)},{passive:true});
-    card.addEventListener('touchend',()=>clearTimeout(pt));
-    card.addEventListener('touchmove',()=>clearTimeout(pt));
-  });
 
   // Countdown — page reloads every 60s
   const updatedTs = ${todayUpdated || 0};
@@ -629,13 +571,12 @@ app.get('/', (req, res) => {
 
 app.get('/trigger-today', async (req, res) => {
   await cronToday();
-  res.send(`cronToday ran. Master: ${store.masterList.size} users. New this run: ${store.newlyAdded.size}.`);
+  res.send(`cronToday ran. Master: ${store.masterList.size} users.`);
 });
 
 app.get('/debug-kv', (req, res) => {
   res.json({
     masterList_count: store.masterList.size,
-    newlyAdded_count: store.newlyAdded.size,
     todayUpdated    : store.todayUpdated,
     todayDayKey     : store.todayDayKey,
     cronRunning     : store.cronRunning,
